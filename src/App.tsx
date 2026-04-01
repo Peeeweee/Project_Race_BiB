@@ -1,11 +1,20 @@
 import React, { useState, useRef } from 'react';
 import { BibPreview, CustomTextElement } from './components/BibPreview';
-import { Upload, Download, ChevronLeft, ChevronRight, Plus } from 'lucide-react';
+import { Upload, Download, ChevronLeft, ChevronRight, Plus, FileSpreadsheet, X } from 'lucide-react';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { jsPDF } from 'jspdf';
-
+import * as XLSX from 'xlsx';
 import { motion, AnimatePresence } from 'motion/react';
+
+const FONT_OPTIONS = [
+  'Inter', 'Carter One', 'Rethink Sans', 'Oswald', 'Anton', 'Roboto', 
+  'Luckiest Guy', 'Bangers', 'Fredoka One', 'Pacifico', 'Permanent Marker', 
+  'Righteous', 'Lobster', 'Alfa Slab One', 'Monoton', 'Graduate', 
+  'Press Start 2P', 'Creepster', 'Black Ops One', 'Special Elite', 
+  'Unica One', 'Orbitron', 'Rubik Mono One', 'Titan One', 'Shrikhand', 
+  'Ultra', 'Faster One', 'Bungee Inline'
+];
 
 const padNumber = (num: number, length: number) => {
   return num.toString().padStart(length, '0');
@@ -38,14 +47,46 @@ function App() {
   const [customTexts, setCustomTexts] = useState<CustomTextElement[]>([]);
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
   const [newCustomText, setNewCustomText] = useState('');
-  
+
+  // ── CSV / Excel mode ────────────────────────────────────────────────────────
+  const [exportMode, setExportMode] = useState<'range' | 'csv'>('range');
+  const [csvNames, setCsvNames] = useState<string[]>([]);
+  const [csvFileName, setCsvFileName] = useState('');
+  const [csvNameCol, setCsvNameCol] = useState('');
+  const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
+
+  // ── Name text layer (CSV mode) ───────────────────────────────────────────────
+  const [nameX, setNameX] = useState(400);
+  const [nameY, setNameY] = useState(420);
+  const [nameFontFamily, setNameFontFamily] = useState('Inter');
+  const [nameFontSize, setNameFontSize] = useState(60);
+  const [nameFontColor, setNameFontColor] = useState('#000000');
+  const [nameFontColor2, setNameFontColor2] = useState('#666666');
+  const [nameIsGradient, setNameIsGradient] = useState(false);
+  const [nameGradientDirection, setNameGradientDirection] = useState<'vertical' | 'horizontal'>('vertical');
+  const [nameIsRainbow, setNameIsRainbow] = useState(false);
+  const [nameHasOutline, setNameHasOutline] = useState(false);
+  const [nameOutlineColor, setNameOutlineColor] = useState('#ffffff');
+  const [nameOutlineThickness, setNameOutlineThickness] = useState(5);
+
+  const [categoryX, setCategoryX] = useState(400);
+  const [categoryY, setCategoryY] = useState(500);
+  const [categoryFontSize, setCategoryFontSize] = useState(40);
+  const [categoryFontColor, setCategoryFontColor] = useState('#000000');
+  const [categoryFontFamily, setCategoryFontFamily] = useState('Inter');
+  const [showCategory, setShowCategory] = useState(true);
+
   const stageRef = useRef<any>(null);
 
   const startNum = parseInt(startNumber, 10) || 1;
   const endNum = parseInt(endNumber, 10) || 10;
-  const totalBibs = Math.max(1, endNum - startNum + 1);
+  const totalBibs = Math.max(1, csvNames.length, endNum - startNum + 1);
+  const effectiveEndNum = startNum + totalBibs - 1;
   const padding = startNumber.length;
-  const currentReviewBib = padNumber(startNum + reviewIndex, padding);
+  const currentReviewBib = exportMode === 'csv'
+    ? padNumber(startNum + reviewIndex, padding)
+    : padNumber(startNum + reviewIndex, padding);
+  const currentReviewName = exportMode === 'csv' ? (csvNames[reviewIndex] || '') : '';
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -99,9 +140,57 @@ function App() {
     setY(e.target.y());
   };
 
+  const handleNameDragEnd = (e: any) => {
+    setNameX(e.target.x());
+    setNameY(e.target.y());
+  };
+
+  const handleCategoryDragEnd = (e: any) => {
+    setCategoryX(e.target.x());
+    setCategoryY(e.target.y());
+  };
+
   const handleImageDragEnd = (e: any) => {
     setImageX(e.target.x());
     setImageY(e.target.y());
+  };
+
+  const handleCsvUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCsvFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const data = new Uint8Array(ev.target?.result as ArrayBuffer);
+      const workbook = XLSX.read(data, { type: 'array' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows: string[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+      if (rows.length < 2) return;
+      const headers = (rows[0] as string[]).map(h => String(h).trim());
+      setCsvHeaders(headers);
+      // Auto-pick the column: prefer 'names'/'name', else first column
+      const autoCol = headers.find(h => /^names?$/i.test(h)) || headers[0];
+      setCsvNameCol(autoCol);
+      const colIdx = headers.indexOf(autoCol);
+      const names = rows.slice(1)
+        .map(r => String(r[colIdx] || '').trim())
+        .filter(n => n.length > 0);
+      setCsvNames(names);
+      // Auto-set the end number based on the number of names
+      const padding = startNumber.length;
+      const targetEnd = startNum + names.length - 1;
+      setEndNumber(padNumber(targetEnd, padding));
+    };
+    reader.readAsArrayBuffer(file);
+    // Reset so same file can be re-uploaded
+    e.target.value = '';
+  };
+
+  // When user changes the name column mapping
+  const handleNameColChange = (col: string) => {
+    setCsvNameCol(col);
+    // Re-extract names from the chosen column (re-read isn't needed — we'd need raw rows)
+    // For simplicity, we prompt re-upload; advanced: store raw rows in state
   };
 
   const handleAddCustomText = () => {
@@ -148,12 +237,11 @@ function App() {
     if (selectedTextId === id) setSelectedTextId(null);
   };
 
-  // Synchronously draws one bib onto the offscreen canvas.
-  // All Canvas 2D calls are synchronous — the canvas is ready to read immediately after.
   const drawBibToCanvas = (
     ctx: CanvasRenderingContext2D,
     bgImg: HTMLImageElement,
     bibNumber: string,
+    participantName: string,
     opts: {
       exportWidth: number; exportHeight: number;
       imgOffX: number; imgOffY: number;
@@ -189,6 +277,7 @@ function App() {
       ctx.restore();
     }
 
+    // Main bib number
     ctx.save();
     ctx.font = `bold ${fontSize}px "${fontFamily}"`;
     ctx.textAlign    = 'center';
@@ -211,15 +300,63 @@ function App() {
     }
     ctx.fillText(bibNumber, textX, textY);
     ctx.restore();
+
+    // Participant name (CSV mode only)
+    if (participantName) {
+      ctx.save();
+      ctx.font = `bold ${nameFontSize}px "${nameFontFamily}"`;
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      
+      if (nameIsRainbow) {
+        const rainbowColors = ['#FF6B6B', '#FFD93D', '#6BCB77', '#4D96FF', '#B983FF', '#FF87E8'];
+        const textMetrics = ctx.measureText(participantName);
+        const g = ctx.createLinearGradient(nameX - textMetrics.width / 2, nameY, nameX + textMetrics.width / 2, nameY);
+        rainbowColors.forEach((color, i) => {
+          g.addColorStop(i / (rainbowColors.length - 1), color);
+        });
+        ctx.fillStyle = g;
+      } else if (nameIsGradient) {
+        const g = (nameGradientDirection === 'vertical')
+          ? ctx.createLinearGradient(nameX, nameY - nameFontSize / 2, nameX, nameY + nameFontSize / 2)
+          : ctx.createLinearGradient(nameX - nameFontSize * participantName.length * 0.3, nameY,
+                                     nameX + nameFontSize * participantName.length * 0.3, nameY);
+        g.addColorStop(0, nameFontColor);
+        g.addColorStop(1, nameFontColor2);
+        ctx.fillStyle = g;
+      } else {
+        ctx.fillStyle = nameFontColor || '#000000';
+      }
+      
+      if (nameHasOutline) {
+        ctx.strokeStyle = nameOutlineColor || '#ffffff';
+        ctx.lineWidth   = nameOutlineThickness;
+        ctx.strokeText(participantName, nameX, nameY);
+      }
+      
+      ctx.fillText(participantName, nameX, nameY);
+      ctx.restore();
+    }
+
+    // Category / Distance
+    if (showCategory && distance) {
+      ctx.save();
+      ctx.font = `bold ${categoryFontSize}px "${categoryFontFamily}"`;
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle    = categoryFontColor || '#000000';
+      ctx.fillText(distance, categoryX, categoryY);
+      ctx.restore();
+    }
   };
 
   // Async version: draws then encodes to PNG ArrayBuffer (for ZIP).
-  // Blobs live outside the V8 heap — memory-safe for large batches.
   const renderBibToBlob = (
     ctx: CanvasRenderingContext2D,
     canvas: HTMLCanvasElement,
     bgImg: HTMLImageElement,
     bibNumber: string,
+    participantName: string,
     opts: {
       exportWidth: number; exportHeight: number;
       imgOffX: number; imgOffY: number;
@@ -227,7 +364,7 @@ function App() {
       color1: string; color2: string; strokeColor: string;
     }
   ): Promise<ArrayBuffer> => {
-    drawBibToCanvas(ctx, bgImg, bibNumber, opts);
+    drawBibToCanvas(ctx, bgImg, bibNumber, participantName, opts);
     return new Promise<ArrayBuffer>((resolve, reject) => {
       canvas.toBlob(async blob => {
         if (!blob) { reject(new Error('toBlob failed')); return; }
@@ -286,46 +423,44 @@ function App() {
       // jsPDF holds ALL images in RAM until save() — can't free them mid-chunk.
       // Fix: use JPEG (5–10× smaller than PNG) + smaller chunk size of 30.
       if (exportFormat === 'pdf') {
-        const PDF_CHUNK = 30; // ~10–30 MB peak per chunk at JPEG quality 0.85
+        const PDF_CHUNK = 30;
         const totalChunks = Math.ceil(totalBibs / PDF_CHUNK);
 
         for (let chunk = 0; chunk < totalChunks; chunk++) {
-          const chunkStart = startNum + chunk * PDF_CHUNK;
-          const chunkEnd   = Math.min(chunkStart + PDF_CHUNK - 1, endNum);
+          // ── Determine index range for this chunk ──
+          const chunkIdxStart = chunk * PDF_CHUNK;
+          const chunkIdxEnd   = Math.min(chunkIdxStart + PDF_CHUNK - 1, totalBibs - 1);
+          const chunkBibStart = padNumber(startNum + chunkIdxStart, padding);
+          const chunkBibEnd   = padNumber(startNum + chunkIdxEnd, padding);
           const chunkLabel = totalChunks > 1
-            ? `Part ${chunk + 1} of ${totalChunks} — bibs ${padNumber(chunkStart, padding)}–${padNumber(chunkEnd, padding)}`
+            ? `Part ${chunk + 1} of ${totalChunks} — bibs ${chunkBibStart}–${chunkBibEnd}`
             : `Generating PDF…`;
-
           setExportChunkLabel(chunkLabel);
 
-          // Fresh jsPDF per chunk — previous chunk's memory freed after save()
           const pdf = new jsPDF({
             orientation: exportWidth > exportHeight ? 'landscape' : 'portrait',
             unit: 'px',
             format: [exportWidth, exportHeight],
           });
 
-          for (let i = chunkStart; i <= chunkEnd; i++) {
-            const bib = padNumber(i, padding);
-            // Draw synchronously onto the shared canvas, then pass the canvas to addImage
-            drawBibToCanvas(ctx, bgImg, bib, renderOpts);
-            if (i > chunkStart) pdf.addPage([exportWidth, exportHeight], exportWidth > exportHeight ? 'landscape' : 'portrait');
-            // Canvas element passed directly — jsPDF reads it synchronously as JPEG (5–10× smaller than PNG)
+          for (let idx = chunkIdxStart; idx <= chunkIdxEnd; idx++) {
+            const bib  = padNumber(startNum + idx, padding);
+            const name = exportMode === 'csv' ? (csvNames[idx] || '') : '';
+            drawBibToCanvas(ctx, bgImg, bib, name, renderOpts);
+            if (idx > chunkIdxStart) pdf.addPage([exportWidth, exportHeight], exportWidth > exportHeight ? 'landscape' : 'portrait');
             pdf.addImage(offscreen, 'JPEG', 0, 0, exportWidth, exportHeight, undefined, 'FAST');
 
-            const globalDone = (chunk * PDF_CHUNK) + (i - chunkStart + 1);
-            if (globalDone % 5 === 0 || i === chunkEnd) {
+            const globalDone = idx + 1;
+            if (globalDone % 5 === 0 || idx === chunkIdxEnd) {
               setExportProgress(Math.round((globalDone / totalBibs) * 100));
               await new Promise<void>(r => setTimeout(r, 0));
             }
           }
 
           const filename = totalChunks > 1
-            ? `race-bibs-${padNumber(chunkStart, padding)}-${padNumber(chunkEnd, padding)}.pdf`
+            ? `race-bibs-${chunkBibStart}-${chunkBibEnd}.pdf`
             : 'race-bibs.pdf';
           pdf.save(filename);
-
-          // Give GC time to reclaim old jsPDF object before next chunk
           await new Promise<void>(r => setTimeout(r, 300));
         }
 
@@ -339,38 +474,39 @@ function App() {
       const totalChunks = Math.ceil(totalBibs / CHUNK_SIZE);
 
       for (let chunk = 0; chunk < totalChunks; chunk++) {
-        const chunkStart = startNum + chunk * CHUNK_SIZE;
-        const chunkEnd   = Math.min(chunkStart + CHUNK_SIZE - 1, endNum);
+        const chunkIdxStart = chunk * CHUNK_SIZE;
+        const chunkIdxEnd   = Math.min(chunkIdxStart + CHUNK_SIZE - 1, totalBibs - 1);
+        const chunkBibStart = padNumber(startNum + chunkIdxStart, padding);
+        const chunkBibEnd   = padNumber(startNum + chunkIdxEnd, padding);
         const chunkLabel = totalChunks > 1
-          ? `Part ${chunk + 1} of ${totalChunks} — bibs ${padNumber(chunkStart, padding)}–${padNumber(chunkEnd, padding)}`
+          ? `Part ${chunk + 1} of ${totalChunks} — bibs ${chunkBibStart}–${chunkBibEnd}`
           : `Generating ZIP…`;
-
         setExportChunkLabel(chunkLabel);
 
-        // Fresh JSZip per chunk — previous chunk's memory is freed after saveAs
         const zip = new JSZip();
 
-        for (let i = chunkStart; i <= chunkEnd; i++) {
-          const bib = padNumber(i, padding);
-          const buf = await renderBibToBlob(ctx, offscreen, bgImg, bib, renderOpts);
-          zip.file(`bib-${bib}.png`, buf);
+        for (let idx = chunkIdxStart; idx <= chunkIdxEnd; idx++) {
+          const bib  = padNumber(startNum + idx, padding);
+          const name = exportMode === 'csv' ? (csvNames[idx] || '') : '';
+          const safeName = name.replace(/[^a-z0-9]/gi, '-').slice(0, 30);
+          const filename = exportMode === 'csv' && name
+            ? `bib-${bib}-${safeName}.png`
+            : `bib-${bib}.png`;
+          const buf = await renderBibToBlob(ctx, offscreen, bgImg, bib, name, renderOpts);
+          zip.file(filename, buf);
 
-          // Global progress across all chunks
-          const globalDone = (chunk * CHUNK_SIZE) + (i - chunkStart + 1);
-          if (globalDone % 5 === 0 || i === chunkEnd) {
+          const globalDone = idx + 1;
+          if (globalDone % 5 === 0 || idx === chunkIdxEnd) {
             setExportProgress(Math.round((globalDone / totalBibs) * 100));
             await new Promise<void>(r => setTimeout(r, 0));
           }
         }
 
-        // Compress + download this chunk, then let GC reclaim memory
         const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 1 } });
-        const filename = totalChunks > 1
-          ? `race-bibs-${padNumber(chunkStart, padding)}-${padNumber(chunkEnd, padding)}.zip`
+        const zipName = totalChunks > 1
+          ? `race-bibs-${chunkBibStart}-${chunkBibEnd}.zip`
           : 'race-bibs.zip';
-        saveAs(blob, filename);
-
-        // Yield a full frame so the browser can GC and paint before next chunk
+        saveAs(blob, zipName);
         await new Promise<void>(r => setTimeout(r, 200));
       }
 
@@ -460,66 +596,185 @@ function App() {
               </label>
             </section>
 
-            {/* 2. Race Details */}
+            {/* 02. Mode Toggle */}
             <section>
               <h2 className="text-sm font-bold uppercase tracking-widest mb-6 border-b-4 border-black pb-2">
-                02. Data
+                02. Mode
               </h2>
-              <div className="space-y-6">
-                <div>
-                  <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-2">Distance / Category</label>
-                  <input
-                    type="text"
-                    value={distance}
-                    onChange={(e) => setDistance(e.target.value)}
-                    className="w-full p-4 border-4 border-black rounded-none focus:ring-0 focus:outline-none focus:border-black font-bold text-lg"
-                    placeholder="e.g. 5KM"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-6">
-                  <div>
-                    <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-2">Start No.</label>
-                    <input
-                      type="text"
-                      value={startNumber}
-                      onChange={(e) => setStartNumber(e.target.value)}
-                      className="w-full p-4 border-4 border-black rounded-none focus:ring-0 focus:outline-none focus:border-black font-bold text-lg"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-2">End No.</label>
-                    <input
-                      type="text"
-                      value={endNumber}
-                      onChange={(e) => setEndNumber(e.target.value)}
-                      className="w-full p-4 border-4 border-black rounded-none focus:ring-0 focus:outline-none focus:border-black font-bold text-lg"
-                    />
-                  </div>
-                </div>
+              <div className="flex border-4 border-black">
+                <button
+                  onClick={() => setExportMode('range')}
+                  className={`flex-1 py-3 text-xs font-bold uppercase tracking-widest transition-colors ${
+                    exportMode === 'range' ? 'bg-black text-white' : 'bg-white text-black hover:bg-gray-100'
+                  }`}
+                >
+                  Number Range
+                </button>
+                <button
+                  onClick={() => setExportMode('csv')}
+                  className={`flex-1 py-3 text-xs font-bold uppercase tracking-widest transition-colors ${
+                    exportMode === 'csv' ? 'bg-black text-white' : 'bg-white text-black hover:bg-gray-100'
+                  }`}
+                >
+                  CSV / Excel
+                </button>
               </div>
             </section>
 
-            {/* 3. Typography */}
+            {/* 03. Data */}
             <section>
               <h2 className="text-sm font-bold uppercase tracking-widest mb-6 border-b-4 border-black pb-2">
-                03. Typography
+                03. Data
+              </h2>
+
+              {exportMode === 'range' ? (
+                <div className="space-y-6">
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-2">Distance / Category</label>
+                    <input
+                      type="text"
+                      value={distance}
+                      onChange={(e) => setDistance(e.target.value)}
+                      className="w-full p-4 border-4 border-black rounded-none focus:ring-0 focus:outline-none focus:border-black font-bold text-lg"
+                      placeholder="e.g. 5KM"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-6">
+                    <div>
+                      <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-2">Start No.</label>
+                      <input
+                        type="text"
+                        value={startNumber}
+                        onChange={(e) => setStartNumber(e.target.value)}
+                        className="w-full p-4 border-4 border-black rounded-none focus:ring-0 focus:outline-none focus:border-black font-bold text-lg"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-2">End No.</label>
+                      <input
+                        type="text"
+                        value={endNumber}
+                        onChange={(e) => setEndNumber(e.target.value)}
+                        className="w-full p-4 border-4 border-black rounded-none focus:ring-0 focus:outline-none focus:border-black font-bold text-lg"
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {/* CSV/Excel Upload */}
+                  {csvNames.length === 0 ? (
+                    <label className="block w-full p-8 border-4 border-black bg-white hover:bg-black hover:text-white transition-colors cursor-pointer text-center group">
+                      <FileSpreadsheet className="w-8 h-8 mx-auto mb-4 text-black group-hover:text-white transition-colors" />
+                      <span className="text-xs font-bold uppercase tracking-widest">Click to upload CSV or Excel</span>
+                      <p className="text-[10px] text-gray-400 group-hover:text-gray-300 mt-1 uppercase tracking-widest">One column called "names"</p>
+                      <input type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={handleCsvUpload} />
+                    </label>
+                  ) : (
+                    <div className="border-4 border-black p-4 space-y-4">
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <p className="text-xs font-bold uppercase tracking-widest">{csvFileName}</p>
+                          <p className="text-[10px] text-gray-500 uppercase tracking-widest mt-1">✓ {csvNames.length} participants loaded</p>
+                        </div>
+                        <button
+                          onClick={() => { setCsvNames([]); setCsvFileName(''); setCsvHeaders([]); setCsvNameCol(''); }}
+                          className="p-1 border-2 border-black hover:bg-black hover:text-white transition-colors"
+                          title="Remove file"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      {/* Preview first 5 names */}
+                      <div className="bg-gray-50 border-2 border-gray-200 p-3 space-y-1 max-h-32 overflow-y-auto">
+                        {csvNames.slice(0, 5).map((n, i) => (
+                          <div key={i} className="flex gap-3 text-[10px] font-mono">
+                            <span className="text-gray-400 w-8">{padNumber(startNum + i, padding)}</span>
+                            <span className="font-bold">{n}</span>
+                          </div>
+                        ))}
+                        {csvNames.length > 5 && (
+                          <p className="text-[10px] text-gray-400 uppercase tracking-widest pt-1">+{csvNames.length - 5} more…</p>
+                        )}
+                      </div>
+
+                      {/* Column picker (if multiple columns) */}
+                      {csvHeaders.length > 1 && (
+                        <div>
+                          <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-2">Name Column</label>
+                          <select
+                            value={csvNameCol}
+                            onChange={(e) => handleNameColChange(e.target.value)}
+                            className="w-full p-3 border-4 border-black rounded-none focus:ring-0 focus:outline-none font-bold text-sm"
+                          >
+                            {csvHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Distance / Category */}
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-2">Distance / Category</label>
+                    <input
+                      type="text"
+                      value={distance}
+                      onChange={(e) => setDistance(e.target.value)}
+                      className="w-full p-4 border-4 border-black rounded-none focus:ring-0 focus:outline-none focus:border-black font-bold text-lg"
+                      placeholder="e.g. 5KM"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-6">
+                    {/* Starting BIB number */}
+                    <div>
+                      <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-2">Start No.</label>
+                      <input
+                        type="text"
+                        value={startNumber}
+                        onChange={(e) => setStartNumber(e.target.value)}
+                        className="w-full p-4 border-4 border-black rounded-none focus:ring-0 focus:outline-none focus:border-black font-bold text-lg"
+                        placeholder="0001"
+                      />
+                    </div>
+                    {/* Ending BIB number */}
+                    <div>
+                      <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-2">
+                        End No. {csvNames.length > 0 && <span className="ml-2 text-gray-400 normal-case font-normal">(min. {padNumber(startNum + csvNames.length - 1, padding)})</span>}
+                      </label>
+                      <input
+                        type="text"
+                        value={endNumber}
+                        onChange={(e) => setEndNumber(e.target.value)}
+                        className="w-full p-4 border-4 border-black rounded-none focus:ring-0 focus:outline-none focus:border-black font-bold text-lg"
+                        placeholder={padNumber(startNum + csvNames.length - 1, padding)}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </section>
+
+            {/* 04. Typography */}
+            <section>
+              <h2 className="text-sm font-bold uppercase tracking-widest mb-6 border-b-4 border-black pb-2">
+                04. Typography
               </h2>
               <div className="space-y-6">
                 <div>
                   <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-2">Font Family</label>
-                  <select
-                    value={fontFamily}
-                    onChange={(e) => setFontFamily(e.target.value)}
-                    className="w-full p-4 border-4 border-black rounded-none focus:ring-0 focus:outline-none focus:border-black font-bold text-lg appearance-none bg-white cursor-pointer"
-                    style={{ backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23000000%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem top 50%', backgroundSize: '0.65rem auto' }}
-                  >
-                    <option value="Inter">INTER</option>
-                    <option value="Carter One">CARTER ONE</option>
-                    <option value="Rethink Sans">RETHINK SANS</option>
-                    <option value="Oswald">OSWALD</option>
-                    <option value="Anton">ANTON</option>
-                    <option value="Roboto">ROBOTO</option>
-                  </select>
+                    <select
+                      value={fontFamily}
+                      onChange={(e) => setFontFamily(e.target.value)}
+                      className="w-full p-4 border-4 border-black rounded-none focus:ring-0 focus:outline-none focus:border-black font-bold text-lg appearance-none bg-white cursor-pointer"
+                      style={{ backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23000000%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem top 50%', backgroundSize: '0.65rem auto' }}
+                    >
+                      {FONT_OPTIONS.map(font => (
+                        <option key={font} value={font}>{font.toUpperCase()}</option>
+                      ))}
+                    </select>
                 </div>
 
                 <div>
@@ -546,10 +801,10 @@ function App() {
               </div>
             </section>
 
-            {/* 4. Colors */}
+            {/* 05. Colors */}
             <section>
               <h2 className="text-sm font-bold uppercase tracking-widest mb-6 border-b-4 border-black pb-2">
-                04. Colors
+                05. Colors
               </h2>
               <div className="space-y-6">
                 <div className="flex items-center gap-6">
@@ -697,14 +952,228 @@ function App() {
               </div>
             </section>
 
-            {/* Export */}
+            {/* 06. Name Text — only in CSV mode */}
+            {exportMode === 'csv' && (
+              <section>
+                <h2 className="text-sm font-bold uppercase tracking-widest mb-6 border-b-4 border-black pb-2">
+                  06. Name Text
+                </h2>
+                <div className="space-y-6">
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-2">Font Family</label>
+                    <select
+                      value={nameFontFamily}
+                      onChange={(e) => setNameFontFamily(e.target.value)}
+                      className="w-full p-4 border-4 border-black rounded-none focus:ring-0 focus:outline-none focus:border-black font-bold text-lg appearance-none bg-white cursor-pointer"
+                      style={{ backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23000000%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem top 50%', backgroundSize: '0.65rem auto' }}
+                    >
+                      {FONT_OPTIONS.map(font => (
+                        <option key={font} value={font}>{font.toUpperCase()}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-4">Font Size</label>
+                    <div className="flex items-center gap-6">
+                      <input type="range" min="10" max="500" value={nameFontSize} onChange={(e) => setNameFontSize(Number(e.target.value))} className="flex-1" />
+                      <input type="number" min="10" max="500" value={nameFontSize} onChange={(e) => setNameFontSize(Number(e.target.value))} className="w-24 p-3 border-4 border-black rounded-none focus:ring-0 focus:outline-none focus:border-black font-bold text-center" />
+                    </div>
+                  </div>
+                  <div className="space-y-4">
+                    <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500">Color Mode</label>
+                    <div className="flex gap-4">
+                      <button 
+                        onClick={() => { setNameIsGradient(false); setNameIsRainbow(false); }}
+                        className={`flex-1 p-3 border-4 font-bold text-xs ${!nameIsGradient && !nameIsRainbow ? 'border-black bg-black text-white' : 'border-gray-200 text-gray-400 hover:border-black'}`}
+                      >
+                        SOLID
+                      </button>
+                      <button 
+                        onClick={() => { setNameIsGradient(true); setNameIsRainbow(false); }}
+                        className={`flex-1 p-3 border-4 font-bold text-xs ${nameIsGradient && !nameIsRainbow ? 'border-black bg-black text-white' : 'border-gray-200 text-gray-400 hover:border-black'}`}
+                      >
+                        GRADIENT
+                      </button>
+                      <button 
+                        onClick={() => { setNameIsGradient(false); setNameIsRainbow(true); }}
+                        className={`flex-1 p-3 border-4 font-bold text-xs ${nameIsRainbow ? 'border-black bg-black text-white' : 'border-gray-200 text-gray-400 hover:border-black'}`}
+                      >
+                        RAINBOW
+                      </button>
+                    </div>
+                  </div>
+
+                  {!nameIsRainbow && (
+                    <div className="space-y-6">
+                      <div className="flex items-center gap-6">
+                        <div className="flex-1">
+                          <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-2">{nameIsGradient ? 'Top Color' : 'Color'}</label>
+                          <div className="flex items-center border-4 border-black p-1 bg-white">
+                            <input type="color" value={nameFontColor} onChange={(e) => setNameFontColor(e.target.value)} className="w-12 h-12 cursor-pointer border-0 p-0 bg-transparent shrink-0" />
+                            <input type="text" value={nameFontColor} onChange={(e) => setNameFontColor(e.target.value)} className="ml-3 font-mono text-sm uppercase font-bold w-full focus:outline-none bg-transparent" />
+                          </div>
+                        </div>
+
+                        {nameIsGradient && (
+                          <div className="flex-1">
+                            <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-2">Bottom Color</label>
+                            <div className="flex items-center border-4 border-black p-1 bg-white">
+                              <input type="color" value={nameFontColor2} onChange={(e) => setNameFontColor2(e.target.value)} className="w-12 h-12 cursor-pointer border-0 p-0 bg-transparent shrink-0" />
+                              <input type="text" value={nameFontColor2} onChange={(e) => setNameFontColor2(e.target.value)} className="ml-3 font-mono text-sm uppercase font-bold w-full focus:outline-none bg-transparent" />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {nameIsGradient && (
+                        <div>
+                          <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-2">Direction</label>
+                          <div className="flex gap-4">
+                            <button 
+                              onClick={() => setNameGradientDirection('vertical')}
+                              className={`flex-1 p-3 border-4 font-bold text-xs ${nameGradientDirection === 'vertical' ? 'border-black bg-black text-white' : 'border-gray-200 text-gray-400 hover:border-black'}`}
+                            >
+                              VERTICAL
+                            </button>
+                            <button 
+                              onClick={() => setNameGradientDirection('horizontal')}
+                              className={`flex-1 p-3 border-4 font-bold text-xs ${nameGradientDirection === 'horizontal' ? 'border-black bg-black text-white' : 'border-gray-200 text-gray-400 hover:border-black'}`}
+                            >
+                              HORIZONTAL
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  
+                  {/* Name Outline Controls */}
+                  <div className="pt-6 border-t-4 border-black mt-6">
+                    <label className="flex items-center gap-4 cursor-pointer group mb-6">
+                      <div className="relative flex items-center justify-center w-8 h-8 border-4 border-black bg-white">
+                        <input
+                          type="checkbox"
+                          checked={nameHasOutline}
+                          onChange={(e) => setNameHasOutline(e.target.checked)}
+                          className="peer absolute opacity-0 w-full h-full cursor-pointer"
+                        />
+                        <div className="hidden peer-checked:block w-4 h-4 bg-black"></div>
+                      </div>
+                      <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-black">Enable Outline</span>
+                    </label>
+
+                    {nameHasOutline && (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                          <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-2">Outline Color</label>
+                          <div className="flex items-center border-4 border-black p-1 bg-white">
+                            <input
+                              type="color"
+                              value={nameOutlineColor}
+                              onChange={(e) => setNameOutlineColor(e.target.value)}
+                              className="w-12 h-12 cursor-pointer border-0 p-0 bg-transparent shrink-0"
+                            />
+                            <input
+                              type="text"
+                              value={nameOutlineColor}
+                              onChange={(e) => setNameOutlineColor(e.target.value)}
+                              className="ml-3 font-mono text-sm uppercase font-bold w-full focus:outline-none bg-transparent"
+                              placeholder="#FFFFFF"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-4">Thickness</label>
+                          <div className="flex items-center gap-6">
+                            <input
+                              type="range"
+                              min="1"
+                              max="100"
+                              value={nameOutlineThickness}
+                              onChange={(e) => setNameOutlineThickness(Number(e.target.value))}
+                              className="flex-1"
+                            />
+                            <input
+                              type="number"
+                              min="1"
+                              max="100"
+                              value={nameOutlineThickness}
+                              onChange={(e) => setNameOutlineThickness(Number(e.target.value))}
+                              className="w-20 p-3 border-4 border-black rounded-none focus:ring-0 focus:outline-none focus:border-black font-bold text-center"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <p className="text-[10px] text-gray-400 uppercase tracking-widest">Drag the name on the canvas to reposition it</p>
+                </div>
+              </section>
+            )}
+
+            {/* 07. Category Text */}
+            <section>
+              <div className="flex items-center justify-between mb-6 border-b-4 border-black pb-2">
+                <h2 className="text-sm font-bold uppercase tracking-widest">
+                  07. Category Text
+                </h2>
+                <label className="flex items-center gap-4 cursor-pointer group">
+                  <div className="relative flex items-center justify-center w-8 h-8 border-4 border-black bg-white">
+                    <input
+                      type="checkbox"
+                      checked={showCategory}
+                      onChange={(e) => setShowCategory(e.target.checked)}
+                      className="peer absolute opacity-0 w-full h-full cursor-pointer"
+                    />
+                    <div className="hidden peer-checked:block w-4 h-4 bg-black"></div>
+                  </div>
+                  <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-black">{showCategory ? 'Enabled' : 'Disabled'}</span>
+                </label>
+              </div>
+
+              {showCategory && (
+                <div className="space-y-6">
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-2">Font Family</label>
+                    <select
+                      value={categoryFontFamily}
+                      onChange={(e) => setCategoryFontFamily(e.target.value)}
+                      className="w-full p-4 border-4 border-black rounded-none focus:ring-0 focus:outline-none focus:border-black font-bold text-lg appearance-none bg-white cursor-pointer"
+                      style={{ backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23000000%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem top 50%', backgroundSize: '0.65rem auto' }}
+                    >
+                      {FONT_OPTIONS.map(font => (
+                        <option key={font} value={font}>{font.toUpperCase()}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-4">Font Size</label>
+                    <div className="flex items-center gap-6">
+                      <input type="range" min="10" max="500" value={categoryFontSize} onChange={(e) => setCategoryFontSize(Number(e.target.value))} className="flex-1" />
+                      <input type="number" min="10" max="500" value={categoryFontSize} onChange={(e) => setCategoryFontSize(Number(e.target.value))} className="w-24 p-3 border-4 border-black rounded-none focus:ring-0 focus:outline-none focus:border-black font-bold text-center" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-[0.15em] text-gray-500 mb-2">Color</label>
+                    <div className="flex items-center border-4 border-black p-1 bg-white">
+                      <input type="color" value={categoryFontColor} onChange={(e) => setCategoryFontColor(e.target.value)} className="w-12 h-12 cursor-pointer border-0 p-0 bg-transparent shrink-0" />
+                      <input type="text" value={categoryFontColor} onChange={(e) => setCategoryFontColor(e.target.value)} className="ml-3 font-mono text-sm uppercase font-bold w-full focus:outline-none bg-transparent" placeholder="#000000" />
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-gray-400 uppercase tracking-widest">Drag the category text on the canvas to reposition it</p>
+                </div>
+              )}
+            </section>
+
+            {/* Review & Export button */}
             <button
               onClick={() => {
                 setReviewIndex(0);
                 setStep('review');
                 window.scrollTo({ top: 0, behavior: 'smooth' });
               }}
-              disabled={!backgroundImage || isExporting}
+              disabled={!backgroundImage || isExporting || (exportMode === 'csv' && csvNames.length === 0)}
               className="w-full py-6 px-6 bg-black hover:bg-gray-800 text-white text-sm font-bold uppercase tracking-[0.2em] rounded-none transition-colors flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed mt-8 border-4 border-black"
             >
               REVIEW & EXPORT
@@ -741,8 +1210,12 @@ function App() {
                       </button>
                     </div>
                     <button onClick={() => { setStartNumber('0001'); setEndNumber('0010'); }} className="text-[10px] font-bold uppercase tracking-[0.1em] text-black border-2 border-black px-3 py-1 hover:bg-black hover:text-white transition-colors">Reset Numbers</button>
-                    <button onClick={() => { setX(400); setY(300); }} className="text-[10px] font-bold uppercase tracking-[0.1em] text-black border-2 border-black px-3 py-1 hover:bg-black hover:text-white transition-colors">Reset Text Pos</button>
-                    <button onClick={() => { setImageX(0); setImageY(0); }} className="text-[10px] font-bold uppercase tracking-[0.1em] text-black border-2 border-black px-3 py-1 hover:bg-black hover:text-white transition-colors">Reset Image Pos</button>
+                    <button onClick={() => { setX(400); setY(300); }} className="text-[10px] font-bold uppercase tracking-[0.15em] text-black border-2 border-black px-3 py-1 hover:bg-black hover:text-white transition-colors whitespace-nowrap">Reset No. Pos</button>
+                    {exportMode === 'csv' && (
+                       <button onClick={() => { setNameX(400); setNameY(420); }} className="text-[10px] font-bold uppercase tracking-[0.15em] text-black border-2 border-black px-3 py-1 hover:bg-black hover:text-white transition-colors whitespace-nowrap">Reset Name Pos</button>
+                    )}
+                    <button onClick={() => { setCategoryX(400); setCategoryY(500); }} className="text-[10px] font-bold uppercase tracking-[0.15em] text-black border-2 border-black px-3 py-1 hover:bg-black hover:text-white transition-colors whitespace-nowrap">Reset Cat. Pos</button>
+                    <button onClick={() => { setImageX(0); setImageY(0); }} className="text-[10px] font-bold uppercase tracking-[0.15em] text-black border-2 border-black px-3 py-1 hover:bg-black hover:text-white transition-colors whitespace-nowrap">Reset Image Pos</button>
                   </div>
                 </div>
               ) : (
@@ -796,7 +1269,7 @@ function App() {
                       <div className="flex justify-between items-end text-xs font-bold font-mono uppercase tracking-widest">
                         <span className="text-gray-400">Start: {padNumber(startNum, padding)}</span>
                         <span className="text-3xl text-black">{currentReviewBib}</span>
-                        <span className="text-gray-400">End: {padNumber(endNum, padding)}</span>
+                        <span className="text-gray-400">End: {padNumber(effectiveEndNum, padding)}</span>
                       </div>
                       <input 
                         type="range" 
@@ -969,7 +1442,9 @@ function App() {
 
               <BibPreview
                 backgroundImage={backgroundImage}
-                bibNumber={step === 'review' ? currentReviewBib : startNumber}
+                bibNumber={step === 'review' ? currentReviewBib : padNumber(startNum, padding)}
+                participantName={step === 'review' ? currentReviewName : (exportMode === 'csv' ? (csvNames[0] || '') : '')}
+                showName={exportMode === 'csv'}
                 fontFamily={fontFamily}
                 fontSize={fontSize}
                 fontColor={fontColor}
@@ -983,7 +1458,28 @@ function App() {
                 y={y}
                 imageX={imageX}
                 imageY={imageY}
+                nameX={nameX}
+                nameY={nameY}
+                nameFontFamily={nameFontFamily}
+                nameFontSize={nameFontSize}
+                nameFontColor={nameFontColor}
+                nameFontColor2={nameFontColor2}
+                nameIsGradient={nameIsGradient}
+                nameGradientDirection={nameGradientDirection}
+                nameIsRainbow={nameIsRainbow}
+                nameHasOutline={nameHasOutline}
+                nameOutlineColor={nameOutlineColor}
+                nameOutlineThickness={nameOutlineThickness}
+                showCategory={showCategory}
+                categoryText={distance}
+                categoryX={categoryX}
+                categoryY={categoryY}
+                categoryFontSize={categoryFontSize}
+                categoryFontColor={categoryFontColor}
+                categoryFontFamily={categoryFontFamily}
                 onDragEnd={handleDragEnd}
+                onNameDragEnd={handleNameDragEnd}
+                onCategoryDragEnd={handleCategoryDragEnd}
                 onImageDragEnd={handleImageDragEnd}
                 stageRef={stageRef}
                 customTexts={customTexts}
