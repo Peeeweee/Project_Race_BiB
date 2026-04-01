@@ -1,0 +1,5 @@
+{
+  "name": "Fun Run Bib Generator",
+  "description": "A system that takes in the design of a race bib and generates customized and automated numbers based on user input, with support for custom fonts, gradients, and PDF/Image export.",
+  "requestFramePermissions": []
+}
