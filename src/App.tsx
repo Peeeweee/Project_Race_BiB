@@ -31,6 +31,7 @@ function App() {
   const [imageY, setImageY] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
+  const [exportChunkLabel, setExportChunkLabel] = useState('');
   const [step, setStep] = useState<'design' | 'review'>('design');
   const [reviewIndex, setReviewIndex] = useState(0);
   const [exportFormat, setExportFormat] = useState<'zip' | 'pdf'>('zip');
@@ -147,91 +148,242 @@ function App() {
     if (selectedTextId === id) setSelectedTextId(null);
   };
 
+  // Synchronously draws one bib onto the offscreen canvas.
+  // All Canvas 2D calls are synchronous — the canvas is ready to read immediately after.
+  const drawBibToCanvas = (
+    ctx: CanvasRenderingContext2D,
+    bgImg: HTMLImageElement,
+    bibNumber: string,
+    opts: {
+      exportWidth: number; exportHeight: number;
+      imgOffX: number; imgOffY: number;
+      textX: number; textY: number;
+      color1: string; color2: string; strokeColor: string;
+    }
+  ): void => {
+    const { exportWidth, exportHeight, imgOffX, imgOffY, textX, textY, color1, color2, strokeColor } = opts;
+
+    ctx.clearRect(0, 0, exportWidth, exportHeight);
+    ctx.drawImage(bgImg, imgOffX, imgOffY, bgImg.naturalWidth, bgImg.naturalHeight);
+
+    for (const ct of customTexts) {
+      ctx.save();
+      ctx.font = `bold ${ct.fontSize}px "${ct.fontFamily || fontFamily}"`;
+      ctx.textBaseline = 'top';
+      if (ct.isGradient) {
+        const g = (gradientDirection === 'vertical')
+          ? ctx.createLinearGradient(ct.x, ct.y, ct.x, ct.y + ct.fontSize)
+          : ctx.createLinearGradient(ct.x, ct.y, ct.x + ct.fontSize * ct.text.length * 0.6, ct.y);
+        g.addColorStop(0, ct.fill || '#000000');
+        g.addColorStop(1, ct.fill2 || '#ffffff');
+        ctx.fillStyle = g;
+      } else {
+        ctx.fillStyle = ct.fill || '#000000';
+      }
+      if (ct.hasOutline) {
+        ctx.strokeStyle = ct.outlineColor || '#000000';
+        ctx.lineWidth   = ct.outlineThickness || 5;
+        ctx.strokeText(ct.text, ct.x, ct.y);
+      }
+      ctx.fillText(ct.text, ct.x, ct.y);
+      ctx.restore();
+    }
+
+    ctx.save();
+    ctx.font = `bold ${fontSize}px "${fontFamily}"`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    if (isGradient) {
+      const g = (gradientDirection === 'vertical')
+        ? ctx.createLinearGradient(textX, textY - fontSize / 2, textX, textY + fontSize / 2)
+        : ctx.createLinearGradient(textX - fontSize * bibNumber.length * 0.3, textY,
+                                   textX + fontSize * bibNumber.length * 0.3, textY);
+      g.addColorStop(0, color1);
+      g.addColorStop(1, color2);
+      ctx.fillStyle = g;
+    } else {
+      ctx.fillStyle = color1;
+    }
+    if (hasOutline) {
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth   = outlineThickness;
+      ctx.strokeText(bibNumber, textX, textY);
+    }
+    ctx.fillText(bibNumber, textX, textY);
+    ctx.restore();
+  };
+
+  // Async version: draws then encodes to PNG ArrayBuffer (for ZIP).
+  // Blobs live outside the V8 heap — memory-safe for large batches.
+  const renderBibToBlob = (
+    ctx: CanvasRenderingContext2D,
+    canvas: HTMLCanvasElement,
+    bgImg: HTMLImageElement,
+    bibNumber: string,
+    opts: {
+      exportWidth: number; exportHeight: number;
+      imgOffX: number; imgOffY: number;
+      textX: number; textY: number;
+      color1: string; color2: string; strokeColor: string;
+    }
+  ): Promise<ArrayBuffer> => {
+    drawBibToCanvas(ctx, bgImg, bibNumber, opts);
+    return new Promise<ArrayBuffer>((resolve, reject) => {
+      canvas.toBlob(async blob => {
+        if (!blob) { reject(new Error('toBlob failed')); return; }
+        resolve(await blob.arrayBuffer());
+      }, 'image/png');
+    });
+  };
+
   const exportImages = async () => {
     if (!stageRef.current || !backgroundImage) return;
-    
+
     setIsExporting(true);
     setExportProgress(0);
-    
-    let zip: JSZip | null = null;
-    let pdf: jsPDF | null = null;
+    setExportChunkLabel('');
+
+    // ── How many bibs per ZIP file (keeps RAM bounded) ────────────────────
+    // 100 bibs × ~1–3 MB each ≈ 100–300 MB peak — safely within Chrome limits.
+    // PDF format doesn't chunk (use smaller ranges for PDF).
+    const CHUNK_SIZE = 100;
 
     try {
       const stage = stageRef.current;
-      // Calculate pixelRatio to export at the original image resolution
-      // If stage is scaled down to 0.5, we need pixelRatio of 2 to get original size
-      const scale = stage.scaleX() || 1;
-      const pixelRatio = 1 / scale;
-      const exportWidth = stage.width() / scale;
-      const exportHeight = stage.height() / scale;
+      const scale        = stage.scaleX() || 1;
+      const exportWidth  = Math.round(stage.width()  / scale);
+      const exportHeight = Math.round(stage.height() / scale);
 
-      if (exportFormat === 'zip') {
-        zip = new JSZip();
-      } else {
-        pdf = new jsPDF({
-          orientation: exportWidth > exportHeight ? 'landscape' : 'portrait',
-          unit: 'px',
-          format: [exportWidth, exportHeight]
-        });
+      // Pre-load background once
+      const bgImg = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image();
+        img.onload  = () => resolve(img);
+        img.onerror = reject;
+        img.src = backgroundImage;
+      });
+
+      // Single off-screen canvas reused for all bibs
+      const offscreen = document.createElement('canvas');
+      offscreen.width  = exportWidth;
+      offscreen.height = exportHeight;
+      const ctx = offscreen.getContext('2d')!;
+
+      // Snapshot text & image positions from Konva (don't touch it again)
+      const textNode = stage.findOne('#main-bib-text');
+      const imgNode  = stage.findOne('Image');
+      const imgOffX  = imgNode  ? imgNode.x()  : 0;
+      const imgOffY  = imgNode  ? imgNode.y()  : 0;
+      const textX    = textNode ? textNode.x() : exportWidth  / 2;
+      const textY    = textNode ? textNode.y() : exportHeight / 2;
+
+      const isValidHex  = (h: string) => /^#([0-9A-F]{3}){1,2}$/i.test(h);
+      const color1      = isValidHex(fontColor)    ? fontColor    : '#000000';
+      const color2      = isValidHex(fontColor2)   ? fontColor2   : '#ffffff';
+      const strokeColor = isValidHex(outlineColor) ? outlineColor : '#000000';
+      const renderOpts  = { exportWidth, exportHeight, imgOffX, imgOffY, textX, textY, color1, color2, strokeColor };
+
+      // ── PDF path ──────────────────────────────────────────────────────────
+      // jsPDF holds ALL images in RAM until save() — can't free them mid-chunk.
+      // Fix: use JPEG (5–10× smaller than PNG) + smaller chunk size of 30.
+      if (exportFormat === 'pdf') {
+        const PDF_CHUNK = 30; // ~10–30 MB peak per chunk at JPEG quality 0.85
+        const totalChunks = Math.ceil(totalBibs / PDF_CHUNK);
+
+        for (let chunk = 0; chunk < totalChunks; chunk++) {
+          const chunkStart = startNum + chunk * PDF_CHUNK;
+          const chunkEnd   = Math.min(chunkStart + PDF_CHUNK - 1, endNum);
+          const chunkLabel = totalChunks > 1
+            ? `Part ${chunk + 1} of ${totalChunks} — bibs ${padNumber(chunkStart, padding)}–${padNumber(chunkEnd, padding)}`
+            : `Generating PDF…`;
+
+          setExportChunkLabel(chunkLabel);
+
+          // Fresh jsPDF per chunk — previous chunk's memory freed after save()
+          const pdf = new jsPDF({
+            orientation: exportWidth > exportHeight ? 'landscape' : 'portrait',
+            unit: 'px',
+            format: [exportWidth, exportHeight],
+          });
+
+          for (let i = chunkStart; i <= chunkEnd; i++) {
+            const bib = padNumber(i, padding);
+            // Draw synchronously onto the shared canvas, then pass the canvas to addImage
+            drawBibToCanvas(ctx, bgImg, bib, renderOpts);
+            if (i > chunkStart) pdf.addPage([exportWidth, exportHeight], exportWidth > exportHeight ? 'landscape' : 'portrait');
+            // Canvas element passed directly — jsPDF reads it synchronously as JPEG (5–10× smaller than PNG)
+            pdf.addImage(offscreen, 'JPEG', 0, 0, exportWidth, exportHeight, undefined, 'FAST');
+
+            const globalDone = (chunk * PDF_CHUNK) + (i - chunkStart + 1);
+            if (globalDone % 5 === 0 || i === chunkEnd) {
+              setExportProgress(Math.round((globalDone / totalBibs) * 100));
+              await new Promise<void>(r => setTimeout(r, 0));
+            }
+          }
+
+          const filename = totalChunks > 1
+            ? `race-bibs-${padNumber(chunkStart, padding)}-${padNumber(chunkEnd, padding)}.pdf`
+            : 'race-bibs.pdf';
+          pdf.save(filename);
+
+          // Give GC time to reclaim old jsPDF object before next chunk
+          await new Promise<void>(r => setTimeout(r, 300));
+        }
+
+        setExportProgress(100);
+        await new Promise(r => setTimeout(r, 300));
+        return;
       }
 
-      for (let i = startNum; i <= endNum; i++) {
-        const currentBib = padNumber(i, padding);
-        
-        // Update the text node directly for export
-        const textNode = stage.findOne('#main-bib-text');
-        if (textNode) {
-          textNode.text(currentBib);
-          
-          // Re-center offset for the new text
-          textNode.offsetX(textNode.width() / 2);
-          textNode.offsetY(textNode.height() / 2);
-          
-          stage.draw();
-          
-          // Wait a tiny bit for render and UI update
-          await new Promise(resolve => setTimeout(resolve, 50));
-          
-          const dataURL = stage.toDataURL({ pixelRatio });
-          
-          if (exportFormat === 'zip' && zip) {
-            const base64Data = dataURL.replace(/^data:image\/png;base64,/, "");
-            zip.file(`bib-${currentBib}.png`, base64Data, { base64: true });
-          } else if (exportFormat === 'pdf' && pdf) {
-            if (i > startNum) {
-              pdf.addPage([exportWidth, exportHeight], exportWidth > exportHeight ? 'landscape' : 'portrait');
-            }
-            pdf.addImage(dataURL, 'PNG', 0, 0, exportWidth, exportHeight);
+
+      // ── ZIP path — chunked to keep RAM bounded ────────────────────────────
+      const totalChunks = Math.ceil(totalBibs / CHUNK_SIZE);
+
+      for (let chunk = 0; chunk < totalChunks; chunk++) {
+        const chunkStart = startNum + chunk * CHUNK_SIZE;
+        const chunkEnd   = Math.min(chunkStart + CHUNK_SIZE - 1, endNum);
+        const chunkLabel = totalChunks > 1
+          ? `Part ${chunk + 1} of ${totalChunks} — bibs ${padNumber(chunkStart, padding)}–${padNumber(chunkEnd, padding)}`
+          : `Generating ZIP…`;
+
+        setExportChunkLabel(chunkLabel);
+
+        // Fresh JSZip per chunk — previous chunk's memory is freed after saveAs
+        const zip = new JSZip();
+
+        for (let i = chunkStart; i <= chunkEnd; i++) {
+          const bib = padNumber(i, padding);
+          const buf = await renderBibToBlob(ctx, offscreen, bgImg, bib, renderOpts);
+          zip.file(`bib-${bib}.png`, buf);
+
+          // Global progress across all chunks
+          const globalDone = (chunk * CHUNK_SIZE) + (i - chunkStart + 1);
+          if (globalDone % 5 === 0 || i === chunkEnd) {
+            setExportProgress(Math.round((globalDone / totalBibs) * 100));
+            await new Promise<void>(r => setTimeout(r, 0));
           }
         }
-        
-        setExportProgress(Math.round(((i - startNum + 1) / totalBibs) * 100));
-      }
 
-      // Reset text to start number
-      const textNode = stageRef.current.findOne('Text');
-      if (textNode) {
-        textNode.text(step === 'review' ? currentReviewBib : startNumber);
-        textNode.offsetX(textNode.width() / 2);
-        textNode.offsetY(textNode.height() / 2);
-        stageRef.current.draw();
+        // Compress + download this chunk, then let GC reclaim memory
+        const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 1 } });
+        const filename = totalChunks > 1
+          ? `race-bibs-${padNumber(chunkStart, padding)}-${padNumber(chunkEnd, padding)}.zip`
+          : 'race-bibs.zip';
+        saveAs(blob, filename);
+
+        // Yield a full frame so the browser can GC and paint before next chunk
+        await new Promise<void>(r => setTimeout(r, 200));
       }
 
       setExportProgress(100);
-      await new Promise(resolve => setTimeout(resolve, 300)); // Brief pause at 100%
+      await new Promise(r => setTimeout(r, 300));
 
-      if (exportFormat === 'zip' && zip) {
-        const content = await zip.generateAsync({ type: 'blob' });
-        saveAs(content, 'race-bibs.zip');
-      } else if (exportFormat === 'pdf' && pdf) {
-        pdf.save('race-bibs.pdf');
-      }
     } catch (error) {
       console.error('Export failed', error);
       alert('Export failed. Please try again.');
     } finally {
       setIsExporting(false);
       setExportProgress(0);
+      setExportChunkLabel('');
     }
   };
 
@@ -268,8 +420,8 @@ function App() {
                 />
               </div>
               
-              <p className="mt-8 text-sm font-mono text-gray-400 uppercase tracking-widest">
-                Please wait while we prepare your ZIP file
+              <p className="mt-8 text-sm font-mono text-gray-400 uppercase tracking-widest text-center">
+                {exportChunkLabel || 'Please wait…'}
               </p>
             </div>
           </motion.div>
@@ -286,8 +438,8 @@ function App() {
             </p>
             <div className="w-12 h-1 bg-black"></div>
           </div>
-          <h1 className="order-1 md:order-2 text-6xl md:text-8xl font-black uppercase text-left md:text-right leading-[0.85] tracking-tighter">
-            RACE BIB<br />GENERATOR
+          <h1 className="order-1 md:order-2 text-6xl md:text-8xl font-black text-left md:text-right leading-[0.85] tracking-tighter">
+            RACE <span style={{ fontStyle: 'italic', letterSpacing: '-0.04em' }}>BiB</span>
           </h1>
         </header>
 
@@ -842,6 +994,29 @@ function App() {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* kpd easter egg — developer signature */}
+      <div
+        title="made with ♥ by kpd"
+        style={{
+          position: 'fixed',
+          bottom: '12px',
+          right: '16px',
+          fontSize: '9px',
+          fontWeight: 900,
+          letterSpacing: '0.35em',
+          color: 'rgba(0,0,0,0.08)',
+          userSelect: 'none',
+          fontFamily: 'monospace',
+          textTransform: 'uppercase',
+          cursor: 'default',
+          transition: 'color 0.3s ease',
+        }}
+        onMouseEnter={e => (e.currentTarget.style.color = 'rgba(0,0,0,0.55)')}
+        onMouseLeave={e => (e.currentTarget.style.color = 'rgba(0,0,0,0.08)')}
+      >
+        kpd
       </div>
       </div>
     </>
