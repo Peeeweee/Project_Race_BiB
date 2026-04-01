@@ -1001,22 +1001,33 @@ function App() {
         title="made with ♥ by kpd"
         style={{
           position: 'fixed',
-          bottom: '12px',
-          right: '16px',
-          fontSize: '9px',
-          fontWeight: 900,
-          letterSpacing: '0.35em',
-          color: 'rgba(0,0,0,0.08)',
+          bottom: '10px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: '4px',
+          color: 'rgba(0,0,0,0.07)',
           userSelect: 'none',
+          cursor: 'default',
+          transition: 'color 0.4s ease',
+          pointerEvents: 'auto',
+        }}
+        onMouseEnter={e => (e.currentTarget.style.color = 'rgba(0,0,0,0.5)')}
+        onMouseLeave={e => (e.currentTarget.style.color = 'rgba(0,0,0,0.07)')}
+      >
+        <div style={{ width: '20px', height: '1px', background: 'currentColor' }} />
+        <span style={{
+          fontSize: '8px',
+          fontWeight: 900,
+          letterSpacing: '0.4em',
           fontFamily: 'monospace',
           textTransform: 'uppercase',
-          cursor: 'default',
-          transition: 'color 0.3s ease',
-        }}
-        onMouseEnter={e => (e.currentTarget.style.color = 'rgba(0,0,0,0.55)')}
-        onMouseLeave={e => (e.currentTarget.style.color = 'rgba(0,0,0,0.08)')}
-      >
-        kpd
+          paddingLeft: '0.4em', // offset for letter-spacing
+        }}>
+          ♥ kpd
+        </span>
       </div>
       </div>
     </>
